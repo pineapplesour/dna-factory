@@ -45,7 +45,12 @@ from dna_factory.unsloth_integration import (
     resolve_use_unsloth,
     revert_unsloth_config_overrides,
 )
-from dna_factory.utils.colorize_args import format_args_with_colors, parse_user_args
+from dna_factory.utils.colorize_args import (
+    UserSpecifiedArgs,
+    find_redundant_args,
+    format_args_with_colors,
+    parse_user_args,
+)
 from dna_factory.utils.colorize_logging import ColoredFormatter, format_logs_with_colors
 from dna_factory.utils.config_merger import merge_config_files
 from dna_factory.utils.output_dir_generator import generate_auto_output_dir
@@ -657,6 +662,27 @@ def run_training(
     return train_result
 
 
+def _parse_default_args(parser, defaults_yaml):
+    """Parse the entry point with neither a user config nor CLI overrides.
+
+    The result (defaults YAML + dataclass defaults) is what user-specified arguments
+    are compared against to tell real overrides from redundant ones. Returns None if
+    the defaults do not parse on their own (e.g. a value the user config must supply).
+    """
+    try:
+        *default_args, _ = parser.parse_args_and_config(
+            ["--config", defaults_yaml], return_remaining_strings=True
+        )
+        decision = get_unsloth_decision()
+        if decision is not None and decision.active:
+            revert_unsloth_config_overrides(
+                default_args[1], ["--config", defaults_yaml]
+            )
+    except Exception:  # noqa: BLE001 - cosmetic only; fall back to "nothing is redundant"
+        return None
+    return default_args
+
+
 def cli_main(spec, argv=None):
     """Shared `__main__` bootstrap: merge default YAML, parse args, run."""
     parser = TrlParser(spec.dataclass_types)
@@ -677,6 +703,13 @@ def cli_main(spec, argv=None):
         else spec.defaults_yaml
     )
     full_args = ["--config", config_path, *cli_args]
+
+    # Parse the defaults alone, to spot user-specified arguments equal to the default.
+    # This runs before the real parse so that side effects of parsing (the `env` section
+    # of the config) end up reflecting the real arguments.
+    default_args = (
+        _parse_default_args(parser, spec.defaults_yaml) if user_specified_args else None
+    )
 
     # Parse arguments
     (
@@ -700,6 +733,24 @@ def cli_main(spec, argv=None):
                 f"[use_unsloth] restored {len(restored)} config value(s) rewritten by unsloth: "
                 + ", ".join(f"{k}: {v[0]!r} -> {v[1]!r}" for k, v in restored.items())
             )
+
+    # Arguments whose parsed value equals the default are shown dimmed and left out of
+    # the auto-generated output_dir
+    if default_args is not None:
+        user_specified_args = UserSpecifiedArgs(
+            user_specified_args,
+            find_redundant_args(
+                user_specified_args,
+                (
+                    script_args,
+                    training_args,
+                    model_args,
+                    dataset_mixture_args,
+                    dnotitia_args,
+                ),
+                default_args,
+            ),
+        )
 
     # Run the main function
     return run_training(

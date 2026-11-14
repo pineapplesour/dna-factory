@@ -62,7 +62,7 @@ docs/qwen38-flash-next.md (its `ple_host_table` requires `use_peft`).
 
 ## Gotchas
 
-- `output_dir: auto` auto-generates a name from non-default args.
+- `output_dir: auto` auto-generates a name from non-default args: user-specified args (config YAML keys or CLI) whose parsed value differs from the default (`_defaults-*.yaml` + dataclass defaults). The argument dump prints those in bold pink, and user-specified args equal to the default (redundant) in gray; redundant args stay out of the name.
 - Default attn is `kernels-community/flash-attn2` (required by `packing`/`padding_free`, and it has B200/sm100 kernels, unlike `kernels-community/vllm-flash-attn3`); default models are from the `dnotitia/` HF org.
 - Preprocessing copies each message's `thinking` → `reasoning_content` for Qwen3's chat template (SFT/DPO only; GRPO/OPD datasets are prompt-only).
 - DeepSpeed only (no FSDP).

@@ -4,10 +4,12 @@ Test cases for dna_factory/utils/colorize_args.py
 This module tests the argument parsing and colorization functionality.
 """
 
+import dataclasses
 import os
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,10 +17,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from dna_factory.utils.colorize_args import (
+    UserSpecifiedArgs,
     colorize_user_args,
+    find_redundant_args,
     format_args_with_colors,
     parse_user_args,
     parse_yaml_config,
+    values_equal,
 )
 
 
@@ -346,6 +351,176 @@ class TestFormatArgsWithColors:
         assert "42" in result
         assert "True" in result
         assert "None" in result
+
+
+PINK = "\033[1;95m"
+GRAY = "\033[90m"
+
+
+class TestValuesEqual:
+    """Test cases for values_equal (parsed-value, deep comparison)"""
+
+    def test_numbers_compare_by_value(self):
+        assert values_equal(1, 1.0)
+        assert values_equal(1e-5, 1.0e-5)
+        assert values_equal(float("1e-5"), 0.00001)
+        assert not values_equal(1e-5, 2e-5)
+
+    def test_none(self):
+        assert values_equal(None, None)
+        assert not values_equal(None, 0)
+        assert not values_equal("none", None)
+
+    def test_lists_and_tuples(self):
+        assert values_equal(["a", "b"], ["a", "b"])
+        assert values_equal(("a", "b"), ["a", "b"])
+        assert not values_equal(["a", "b"], ["b", "a"])
+        assert not values_equal(["a"], ["a", "b"])
+
+    def test_nested_dicts_ignore_key_order(self):
+        assert values_equal(
+            {"min_lr_rate": 0.1, "opts": [1, {"x": 2}]},
+            {"opts": [1, {"x": 2.0}], "min_lr_rate": 0.1},
+        )
+        assert not values_equal({"opts": [1, {"x": 2}]}, {"opts": [1, {"x": 3}]})
+
+    def test_dataclass_items(self):
+        @dataclasses.dataclass(eq=False)
+        class Item:
+            path: str
+            weight: float = 1.0
+
+        assert values_equal(
+            [Item("org/a"), Item("org/b", 2)], [Item("org/a"), Item("org/b", 2.0)]
+        )
+        assert not values_equal([Item("org/a")], [Item("org/c")])
+
+    def test_uncomparable_values_count_as_different(self):
+        class Broken:
+            def __eq__(self, other):
+                raise RuntimeError("no comparison")
+
+        assert not values_equal(Broken(), Broken())
+
+
+class TestFindRedundantArgs:
+    """Test cases for find_redundant_args"""
+
+    def test_equal_to_default_is_redundant(self):
+        parsed = [SimpleNamespace(learning_rate=1e-5, packing=True, max_length=2048)]
+        default = [SimpleNamespace(learning_rate=1.0e-5, packing=True, max_length=1024)]
+        result = find_redundant_args(
+            {"learning_rate", "packing", "max_length"}, parsed, default
+        )
+        assert result == {"learning_rate", "packing"}
+
+    def test_unspecified_args_are_never_reported(self):
+        parsed = [SimpleNamespace(learning_rate=1e-5, packing=True)]
+        default = [SimpleNamespace(learning_rate=1e-5, packing=True)]
+        assert find_redundant_args({"packing"}, parsed, default) == {"packing"}
+        assert find_redundant_args(set(), parsed, default) == set()
+
+    def test_names_that_are_not_arguments_stay_user_specified(self):
+        parsed = [SimpleNamespace(learning_rate=1e-5)]
+        default = [SimpleNamespace(learning_rate=1e-5)]
+        assert find_redundant_args({"config", "unknown_key"}, parsed, default) == set()
+
+    def test_argument_missing_from_defaults_is_not_redundant(self):
+        parsed = [SimpleNamespace(extra=1)]
+        default = [SimpleNamespace()]
+        assert find_redundant_args({"extra"}, parsed, default) == set()
+
+    def test_nested_and_list_values(self):
+        parsed = [
+            SimpleNamespace(
+                reward_funcs=["a.b", "c.d"],
+                lr_scheduler_kwargs={"min_lr_rate": 0.1},
+                report_to=["none"],
+            )
+        ]
+        default = [
+            SimpleNamespace(
+                reward_funcs=["a.b", "c.d"],
+                lr_scheduler_kwargs={"min_lr_rate": 0.1},
+                report_to=["wandb"],
+            )
+        ]
+        result = find_redundant_args(
+            {"reward_funcs", "lr_scheduler_kwargs", "report_to"}, parsed, default
+        )
+        assert result == {"reward_funcs", "lr_scheduler_kwargs"}
+
+    def test_same_name_in_several_objects_must_match_everywhere(self):
+        parsed = [SimpleNamespace(seed=42), SimpleNamespace(seed=7)]
+        default = [SimpleNamespace(seed=42), SimpleNamespace(seed=42)]
+        assert find_redundant_args({"seed"}, parsed, default) == set()
+
+
+class TestUserSpecifiedArgs:
+    """Test cases for the UserSpecifiedArgs set"""
+
+    def test_behaves_like_a_set_of_names(self):
+        args = UserSpecifiedArgs({"learning_rate", "packing"}, {"packing"})
+        assert args == {"learning_rate", "packing"}
+        assert "packing" in args
+        assert args.redundant == {"packing"}
+
+    def test_redundant_is_limited_to_specified_names(self):
+        args = UserSpecifiedArgs({"learning_rate"}, {"packing"})
+        assert args.redundant == frozenset()
+
+    def test_defaults_to_no_redundant_args(self):
+        assert UserSpecifiedArgs({"learning_rate"}).redundant == frozenset()
+
+
+class TestColorizeThreeStates:
+    """Overriding args are pink, redundant ones gray, unspecified ones uncolored"""
+
+    TEXT = "{ 'learning_rate': 1e-05,\n  'max_length': 2048,\n  'seed': 42}"
+
+    def test_three_states(self):
+        user_args = UserSpecifiedArgs(
+            {"learning_rate", "max_length"}, {"learning_rate"}
+        )
+        lines = colorize_user_args(self.TEXT, user_args).split("\n")
+
+        assert lines[0] == f"{GRAY}{{ 'learning_rate': 1e-05,\033[0m"
+        assert lines[1] == f"{PINK}  'max_length': 2048,\033[0m"
+        assert lines[2] == "  'seed': 42}"
+
+    def test_explicit_redundant_args_argument(self):
+        result = colorize_user_args(
+            self.TEXT, {"learning_rate", "max_length"}, redundant_args={"learning_rate"}
+        )
+        lines = result.split("\n")
+        assert lines[0].startswith(GRAY)
+        assert lines[1].startswith(PINK)
+
+    def test_plain_set_keeps_everything_pink(self):
+        result = colorize_user_args(self.TEXT, {"learning_rate", "max_length"})
+        lines = result.split("\n")
+        assert lines[0].startswith(PINK)
+        assert lines[1].startswith(PINK)
+        assert GRAY not in result
+
+    def test_format_args_with_colors_three_states(self):
+        user_args = UserSpecifiedArgs(
+            {"learning_rate", "max_length"}, {"learning_rate"}
+        )
+        result = format_args_with_colors(
+            {
+                "learning_rate": 1e-05,
+                "max_length": 2048,
+                "seed": 42,
+                "run_name": "a-name-long-enough-to-make-pprint-put-one-key-per-line",
+            },
+            user_args,
+        )
+        lines = result.split("\n")
+        assert lines[0].startswith(GRAY)
+        assert lines[1].startswith(PINK)
+        assert "\033[" not in lines[2]
+        assert "\033[" not in lines[3]
 
 
 if __name__ == "__main__":

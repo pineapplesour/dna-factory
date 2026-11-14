@@ -13,6 +13,7 @@ import pytest
 # Add parent directory to path to import dna_factory
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from dna_factory.utils.colorize_args import UserSpecifiedArgs
 from dna_factory.utils.output_dir_generator import generate_auto_output_dir
 
 
@@ -369,6 +370,46 @@ class TestGenerateAutoOutputDir:
 
         # The '/' in the teacher id is normalized to '-', as for every other value
         assert result == "Qwen3-0.6B-OPD.teacher-dnotitia-Qwen3-1.7B.maxcl-512.beta-1.0"
+
+    def _generate(self, user_args, **kwargs):
+        training_args = SimpleNamespace(
+            learning_rate=1e-05, max_length=2048, num_train_epochs=2
+        )
+        return generate_auto_output_dir(
+            "dnotitia/Qwen3-0.6B",
+            user_args,
+            SimpleNamespace(),
+            training_args,
+            SimpleNamespace(),
+            SimpleNamespace(),
+            SimpleNamespace(),
+            "SFT",
+            **kwargs,
+        )
+
+    def test_redundant_args_are_left_out_of_the_name(self):
+        """Args equal to the default do not change the run, so not the name either"""
+        user_args = UserSpecifiedArgs(
+            {"learning_rate", "max_length", "num_train_epochs"},
+            {"learning_rate", "num_train_epochs"},
+        )
+        assert self._generate(user_args) == "Qwen3-0.6B-SFT.max-2048"
+
+    def test_explicit_redundant_args_argument(self):
+        """A plain set plus redundant_args behaves like UserSpecifiedArgs"""
+        result = self._generate(
+            {"learning_rate", "max_length"}, redundant_args={"learning_rate"}
+        )
+        assert result == "Qwen3-0.6B-SFT.max-2048"
+
+    def test_only_redundant_args_falls_back_to_the_bare_name(self):
+        user_args = UserSpecifiedArgs({"learning_rate"}, {"learning_rate"})
+        assert self._generate(user_args) == "Qwen3-0.6B-SFT"
+
+    def test_plain_set_keeps_every_user_arg_in_the_name(self):
+        """Without redundancy information the name is unchanged"""
+        result = self._generate({"learning_rate", "max_length", "num_train_epochs"})
+        assert result == "Qwen3-0.6B-SFT.max-2048.ep-2.lr-1e-05"
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ def generate_auto_output_dir(
     dataset_mixture_args,
     dnotitia_args,
     training_type,
+    redundant_args=None,
 ):
     """
     Auto-generate output directory name based on model name and user-specified arguments.
@@ -19,6 +20,10 @@ def generate_auto_output_dir(
         model_args: Model arguments object
         dataset_mixture_args: Dataset mixture arguments object
         dnotitia_args: Dnotitia arguments object
+        training_type (str): Training type tag appended to the model name (e.g. "SFT")
+        redundant_args (set): User-specified argument names whose value equals the
+            default; they are left out of the name because the run is identical to
+            one that omits them. Defaults to `user_specified_args.redundant` if present.
 
     Returns:
         str: Auto-generated output directory name
@@ -96,11 +101,18 @@ def generate_auto_output_dir(
         "eval_max_tokens",
     }
 
-    # Create a unified dictionary of all user-specified arguments
+    if redundant_args is None:
+        redundant_args = getattr(user_specified_args, "redundant", ())
+
+    # Create a unified dictionary of all user-specified arguments that change the run
     user_args_dict = {}
     for _, args_dict in all_args:
         for arg_name, arg_value in args_dict.items():
-            if arg_name in user_specified_args and arg_name not in EXCLUDED_PARAMS:
+            if (
+                arg_name in user_specified_args
+                and arg_name not in redundant_args
+                and arg_name not in EXCLUDED_PARAMS
+            ):
                 user_args_dict[arg_name] = arg_value
 
     # Collect user-specified argument names and values in the order defined in PARAM_ABBREVIATIONS
